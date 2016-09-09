@@ -83,7 +83,7 @@ while true
     imgCrop = imcrop(imgWarp, rect);
     
 %     imgInt = imgCrop(:,:,1) > 200;
-    imgInt = createMask(imgCrop);
+    imgInt = createMaskBlue(imgCrop);
 
     stats = regionprops(imgInt, 'Centroid');
 %     notRows = [stats.Area] < 10*factor^2 | [stats.Area] > 30*factor^2;
@@ -129,7 +129,7 @@ while true
     set(h, 'CData', imgAnn);
     drawnow
     str = sprintf('%f %f %f %f\n', readingOut, targetOut);
-    fprintf(s, str);
+%     fprintf(s, str);
     pause(0.05)
 end
 

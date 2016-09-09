@@ -39,6 +39,7 @@ int robot_move(float *pose, float tol) {
   if (error > tol) return 0; // Serial.println("Could not reach target");
 
   memcpy(q, q0, sizeof(float) * 4);
+  p("q:", q, 1, 4);
   for (int k = 0; k < dof; k++)
     joint[k].write(jdirection[k] * q[k] * 180 / PI + joffset[k]);
 
@@ -127,7 +128,7 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(100);
   robot_setup();
-  robot_move(home, 0.1);
+  robot_move(home, 1e-2);
   gripper_act(0);
 }
 
@@ -151,7 +152,7 @@ void loop() {
     }
 
     // move robot and actuate gripper
-    else if (robot_move(s, 0.1) == true) {
+    else if (robot_move(s, 1e-2) == true) {
       gripper_act(gact);
       Serial.print("Success");
     }
