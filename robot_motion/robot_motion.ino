@@ -36,7 +36,8 @@ int robot_move(float *pose, float tol) {
   float q0[4] = {q[0]*CONTR, q[1]*CONTR, q[2]*CONTR, q[3]*CONTR};
   float error = ik(pose, 4, q0, fk_fcn);
 
-  if (error > tol) return 0; // Serial.println("Could not reach target");
+  Serial.println(String("Error: ") + error);
+  if (error > tol || isnan(error)) return 0; // Serial.println("Could not reach target");
 
   memcpy(q, q0, sizeof(float) * 4);
   p("q:", q, 1, 4);
@@ -92,6 +93,7 @@ void fk_fcn(float *q, float *s) {
   s[1] = T[1][3]; // y
   s[2] = T[2][3]; // z
 //  s[3] = -atan(T[0][1] / T[0][0]); // yaw (ZYX)
+  // #TODO change this to atan2 to remove singularity
   s[3] = asin(-T[2][0]); // pitch (ZYX)
   // ===================================================
 }
@@ -128,7 +130,7 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(100);
   robot_setup();
-  robot_move(home, 1e-2);
+  robot_move(home, 1e-1);
   gripper_act(0);
 }
 
@@ -152,7 +154,7 @@ void loop() {
     }
 
     // move robot and actuate gripper
-    else if (robot_move(s, 1e-2) == true) {
+    else if (robot_move(s, 1e-1) == true) {
       gripper_act(gact);
       Serial.print("Success");
     }

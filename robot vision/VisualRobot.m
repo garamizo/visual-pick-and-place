@@ -3,20 +3,20 @@ classdef VisualRobot < handle
     %   Requires a connected Arduino with the code robot_motion
     %
     %   Hints:
-    %    - Close all opened serial ports: fclose(instrfind)
-    %    - Close all cameras: imaqreset
+    %    - Close all opened serial ports and camera: fclose(instrfind), imaqreset
     %    - Discard frames to free memory: flushdata(obj.vid)
     
     properties
+        vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 10);
         s = serial('COM4', 'Baudrate', 115200, 'Terminator', 'CR/LF', 'Timeout', 0.1);
-        vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 100);
+
         
         res = [320 240];
     end
     
     methods
         function obj = VisualRobot(varargin)
-            
+
             % assign custom options
             for k = 1 : 2 : (nargin-3)
                 switch varargin{k}
@@ -28,29 +28,26 @@ classdef VisualRobot < handle
                 end
             end
             
+            % enable serial data available callback
+            obj.s.BytesAvailableFcnMode = 'terminator';
+            obj.s.BytesAvailableFcn = {@obj.serial_data_available};
+            
+%             pause(1) % include this if says obj.vid is empty ============
             fopen(obj.s);
             start(obj.vid)
+        end
+        
+        function serial_data_available(obj, src, event)
+            disp(fgets(src))
         end
 
         function preview(obj)
             preview(obj.vid)
         end
         
-        function success = move(obj, pose, grip)
+        function move(obj, pose, grip)
             str = sprintf('%f %f %f %f %f', pose, grip);
             fprintf(obj.s, str);
-            
-            [msg, count] = fscanf(obj.s, '%s');
-            if count == 0
-                warning('Serial link is not responding')
-                warning(msg)
-            elseif ~strcmp(msg, 'Success')
-                warning(['Pose ' num2str(pose) ' out of reach'])
-            else
-                success = true;
-                return
-            end
-            success = false;
         end
         
         function img = getsnapshot(obj)
@@ -173,13 +170,13 @@ classdef VisualRobot < handle
             
             v = VisualRobot();
             
-            home = [0.2 0 0.1 pi/2];
+            home = [0.2 0 0.05 pi/2-0.05];
             posxy = home(1:2);
             dt = 0.1;
             
             v.move(home, 50);
             
-            velxy = 10e-2/1 * [1 0];
+            velxy = 5e-2/1 * [1 0];
             t0 = tic;
             while toc(t0) < 10
                 tic
