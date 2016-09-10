@@ -7,9 +7,8 @@ classdef VisualRobot < handle
     %    - Discard frames to free memory: flushdata(obj.vid)
     
     properties
-        vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 10);
+        vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 1);
         s = serial('COM4', 'Baudrate', 115200, 'Terminator', 'CR/LF', 'Timeout', 0.1);
-
         
         res = [320 240];
     end
@@ -32,9 +31,58 @@ classdef VisualRobot < handle
             obj.s.BytesAvailableFcnMode = 'terminator';
             obj.s.BytesAvailableFcn = {@obj.serial_data_available};
             
-%             pause(1) % include this if says obj.vid is empty ============
-            fopen(obj.s);
+            if ~isvalid(obj.vid)
+                warning('Video was invalid')
+                obj.vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 10);
+            end
             start(obj.vid)
+            fopen(obj.s);
+        end
+        
+        function manual(obj)
+            
+            home = [0.2 0 0.08 pi/2-0.05];
+            pos = home;
+            obj.move(pos, 0);
+            gstate = 0;
+            
+            dt = 0.1;
+            h = imshow(obj.getsnapshot);
+
+            while isvalid(h)
+                tic
+                set(h, 'CData', obj.getsnapshot);
+
+                [x, y, b] = ginput(1);
+
+                switch b
+                    case 1,     % navigate
+                        v = 5e-1 * ([x y] - obj.res/2) ./ obj.res/2;
+                        v(1) = -v(1);
+
+                        pos(1:2) = pos(1:2) + v * dt;
+                        if norm(pos - home, 2) > 0.1
+                            pos(1:2) = pos(1:2) - v * dt;
+                        end
+
+                    case 2,     % return home
+                        pos = home;
+
+                    case 3,     % grab/release object
+                        pos(3) = 0.01;
+                        obj.move(pos, gstate);
+                        pause(0.5)
+
+                        gstate = 100 * ~gstate;
+                        obj.move(pos, gstate);
+                        pause(1)
+
+                        pos(3) = home(3);
+                end
+
+                obj.move(pos, gstate);
+                pause(dt - toc)
+            end
         end
         
         function serial_data_available(obj, src, event)
@@ -170,7 +218,7 @@ classdef VisualRobot < handle
             
             v = VisualRobot();
             
-            home = [0.2 0 0.05 pi/2-0.05];
+            home = [0.25 0 0.05 pi/2-0.05];
             posxy = home(1:2);
             dt = 0.1;
             
@@ -181,7 +229,7 @@ classdef VisualRobot < handle
             while toc(t0) < 10
                 tic
                 posxy = posxy + dt * velxy;
-                if norm(posxy - home(1:2), 2) > 0.05
+                if norm(posxy - home(1:2), 2) > 0.08
                     velxy = -velxy;
                 end
                 norm(posxy - home(1:2), 2)
