@@ -1,10 +1,7 @@
-#include "LinearAlgebra.h"
-#include "Robotics.h"
 #include <Servo.h>
 
 // set degrees of freedom ==================
 const int dof = 4;
-float home[] = {0.2, 0, 0.3, 0};  // home pose
 // =======================================
 
 Servo joint[dof]; // robot joint servomotors
@@ -23,80 +20,18 @@ void robot_setup() {
   gripper.attach(gpin);
 }
 
-int robot_move(float *pose, float tol) {
+void robot_move(float *q) {
   // move ee to a pose, given a tolerance norm2. Returns true if success
 
   // centralize servomotors =============================
   const float jdirection[] = { -1, -1, 1, 1};   // joint direction
   const float joffset[] = {90, 90, 90, 85};     // joint offset
-  const float CONTR = 0.8;                      // contraction factor (for ik solver)
   // ===================================================
 
-  static float q[] = {0, 0, 0, 0};
-  float q0[4] = {q[0]*CONTR, q[1]*CONTR, q[2]*CONTR, q[3]*CONTR};
-  float error = ik(pose, 4, q0, fk_fcn);
-
-  Serial.println(String("Error: ") + error);
-  if (error > tol || isnan(error)) return 0; // Serial.println("Could not reach target");
-
-  memcpy(q, q0, sizeof(float) * 4);
-  p("q:", q, 1, 4);
   for (int k = 0; k < dof; k++)
     joint[k].write(jdirection[k] * q[k] * 180 / PI + joffset[k]);
-
-  return 1;
 }
 
-void fk_fcn(float *q, float *s) {
-  // convert joint coords q to space coords s
-
-  // define robot DH kinematics ============================
-  float angle[] = {q[0], q[1] - PI/2, q[2] + PI/2, q[3]},
-        offset[] = {.105, 0, 0, 0},
-        twist[] = {-PI/2, 0, 0, PI/2},
-        length[] = {.02, .145, .185, .077};
-  // ===================================================
-
-  float T[4][4] = { // ee pose in transform matrix
-    {1, 0, 0, 0},
-    {0, 1, 0, 0},
-    {0, 0, 1, 0},
-    {0, 0, 0, 1}
-  };
-
-  float tmp[4][4];
-  int k, i, j, p;
-
-  for (k = 0; k < dof; k++) {
-
-    float cz = cos(angle[k]), sz = sin(angle[k]), cx = cos(twist[k]), sx = sin(twist[k]);
-
-    float A[4][4] = {
-      cz,   -sz * cx,   sz * sx,    length[k]*cz,
-      sz,   cz * cx,    -cz * sx,   length[k]*sz,
-      0,    sx,     cx,     offset[k],
-      0,    0,      0,      1
-    };
-
-    memcpy((float*) tmp, (float*) T, sizeof(float) * 16);
-
-    for (i = 0; i < 4; i++)
-      for (j = 0; j < 4; j++) {
-        T[i][j] = 0;
-        for (p = 0; p < 4; p++)
-          T[i][j] += tmp[i][p] * A[p][j];
-      }
-  }
-
-  // select coordinates ==============================
-  s[0] = T[0][3]; // x
-  s[1] = T[1][3]; // y
-  s[2] = T[2][3]; // z
-//  s[3] = -atan(T[0][1] / T[0][0]); // yaw (ZYX)
-  // #TODO change this to atan2 to remove singularity
-  s[3] = asin(-T[2][0]); // pitch (ZYX)
-  // ===================================================
-}
 
 void gripper_act(int cmd) {
   // command gripper by 0:open to 100:close
@@ -130,8 +65,6 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(100);
   robot_setup();
-  robot_move(home, 1e-1);
-  gripper_act(0);
 }
 
 
@@ -141,7 +74,7 @@ void loop() {
   if(Serial.available() > 0) {
 
     // retrieve target pose and gripper state
-    float s[] = { Serial.parseFloat(),
+    float q[] = { Serial.parseFloat(),
                   Serial.parseFloat(), 
                   Serial.parseFloat(), 
                   Serial.parseFloat() };  // in radians and meters [x, y, z, pitch]
@@ -149,19 +82,14 @@ void loop() {
 
     delay(10);
     if (Serial.read() != '\r' || Serial.read() != '\n') {
-      Serial.print("Not following communication protocol");
+      Serial.println("Not following communication protocol");
       while(Serial.available()) Serial.read();    // clear buffer
-    }
-
-    // move robot and actuate gripper
-    else if (robot_move(s, 1e-1) == true) {
+      
+    } else {
+      robot_move(q);
       gripper_act(gact);
-      Serial.print("Success");
+      Serial.println("ACK");
     }
-    else
-      p("Failure", s, 1, dof);
-
-    Serial.println(); // termination character
   }
 }
 

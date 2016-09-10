@@ -59,7 +59,7 @@ if nargin == 4
     handles.v = varargin{:};
     handles.hview = imshow(handles.v.getsnapshot(), 'Parent', handles.axes1);
     
-    home = [15e-2 0 20e-2 0];
+    home = [25e-2 0 10e-2 pi/2-0.01];
     g = get(handles.pick_place, 'Value') * 100;
 
     set(handles.xctrl, 'Value', interp1([5e-2 30e-2], [0 1], home(1), 'linear'))
@@ -157,7 +157,7 @@ function return_home_Callback(hObject, eventdata, handles)
 % hObject    handle to return_home (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
-home = [25e-2 0 20e-2 0];
+home = [25e-2 0 10e-2 pi/2-0.01];
 g = get(handles.pick_place, 'Value') * 100;
 
 set(handles.xctrl, 'Value', interp1([10e-2 40e-2], [0 1], home(1), 'linear'))
