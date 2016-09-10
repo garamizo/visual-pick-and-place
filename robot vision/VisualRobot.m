@@ -94,8 +94,19 @@ classdef VisualRobot < handle
         end
         
         function move(obj, pose, grip)
-            str = sprintf('%f %f %f %f %f', pose, grip);
-            fprintf(obj.s, str);
+            
+            persistent q
+            if isempty(q)
+                q = zeros(4, 1);
+            end
+            tol = 1e-1;
+            
+            [qp, dev] = ik(pose(:), q(:) * 0.8);
+            if norm(dev, 2) < tol && all(~isnan(dev))
+                str = sprintf('%f %f %f %f %f', qp, grip);
+                q = qp;
+                fprintf(obj.s, str);
+            end
         end
         
         function img = getsnapshot(obj)
@@ -220,7 +231,7 @@ classdef VisualRobot < handle
             
             home = [0.25 0 0.05 pi/2-0.05];
             posxy = home(1:2);
-            dt = 0.1;
+            dt = 0.05;
             
             v.move(home, 50);
             
