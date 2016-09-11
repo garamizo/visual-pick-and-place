@@ -7,14 +7,18 @@ classdef VisualRobot < handle
     %    - Discard frames to free memory: flushdata(obj.vid)
     
     properties
-        vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 1);
-        s = serial('COM4', 'Baudrate', 115200, 'Terminator', 'CR/LF', 'Timeout', 0.1);
+        vid
+        s
         
-        res = [320 240];
+        res = [320 240];    % camera resolution
+        T0c = [Ry(pi) [20e-2; 0; 50e-2]; 0 0 0 1]; % pose from world to camera
     end
     
     methods
         function obj = VisualRobot(varargin)
+            
+            obj.vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 1);
+            obj.s = serial('COM4', 'Baudrate', 115200, 'Terminator', 'CR/LF', 'Timeout', 0.1);
 
             % assign custom options
             for k = 1 : 2 : (nargin-3)
@@ -31,10 +35,6 @@ classdef VisualRobot < handle
             obj.s.BytesAvailableFcnMode = 'terminator';
             obj.s.BytesAvailableFcn = {@obj.serial_data_available};
             
-            if ~isvalid(obj.vid)
-                warning('Video was invalid')
-                obj.vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 10);
-            end
             start(obj.vid)
             fopen(obj.s);
         end
@@ -112,8 +112,46 @@ classdef VisualRobot < handle
         function img = getsnapshot(obj)
             img = getsnapshot(obj.vid);
         end
-
         
+        function [target, success] = search_by_color(obj, HSV, props)
+            % props: hsvmin, hsvmax, marea
+
+            BW = (HSV(:,:,1) >= props.hsvmin(1) ) & (HSV(:,:,1) <= props.hsvmax(1)) & ...
+                (HSV(:,:,2) >= props.hsvmin(2) ) & (HSV(:,:,2) <= props.hsvmax(2)) & ...
+                (HSV(:,:,3) >= props.hsvmin(3) ) & (HSV(:,:,3) <= props.hsvmax(3));
+
+            BWclose = imclose(BW, strel('sphere', round(5e-3*props.marea)));      % fill gaps
+%             BWopen = imopen(BWclose, strel('sphere', round(12e-3*props.marea)));   % remove small blobs
+            
+            target = regionprops(BWclose, 'Area', 'Centroid');
+            success = ~isempty(target);
+            if success
+                [~, idx] = min(abs([target.Area] - props.marea));
+                target = target(idx);
+            end
+              
+            %{
+            subplot(221), imshow(BW)
+            subplot(222), imshow(BWclose)
+%             subplot(223), imshow(BWopen)
+%             subplot(224), imshow(BWclose)
+            set(gcf, 'position', [38    74   801   592])
+            %}
+        end
+
+        function v0 = convert(obj, vim)
+            % convert velocity in image to world
+            % change direction and scale
+            
+            % vim [pixels/sec]
+            % v0 [m/sec]
+            
+            v0 = [-vim(:,1) vim(:,2)] * (25e-2/200);
+        end
+            
+
+            
+            
         function Tcb = find_board(obj, RGB)
             % find a large square on center of image
 
@@ -226,30 +264,44 @@ classdef VisualRobot < handle
         end
         
         function test
-            
-            v = VisualRobot();
-            
-            home = [0.25 0 0.05 pi/2-0.05];
-            posxy = home(1:2);
-            dt = 0.05;
+            %%
+            dt = 0.2;
+            home = [0.2 0 0.1 pi/2-0.05];
+            purpleprops = struct('hsvmin', [0.759 0.153  0.478], 'hsvmax', [0.867 0.668 1], 'marea', 1000);
             
             v.move(home, 50);
+            pause(1)
             
-            velxy = 5e-2/1 * [1 0];
+            t = (0 : dt : 10)';
+            posxy = bsxfun(@plus, bsxfun(@times, sin(2*pi*0.2*t), 7e-2*[1 -1]), home(1:2));
+            posij = zeros(size(posxy));
+            tr = zeros(size(t));
+            
             t0 = tic;
-            while toc(t0) < 10
+            for k = 1 : size(posxy, 1)
                 tic
-                posxy = posxy + dt * velxy;
-                if norm(posxy - home(1:2), 2) > 0.08
-                    velxy = -velxy;
+                
+                [target, success] = v.search_by_color(rgb2hsv(v.getsnapshot), purpleprops);
+                if success
+                    posij(k,:) = target.Centroid;
+                    tr(k) = toc(t0);
                 end
-                norm(posxy - home(1:2), 2)
-                pose = [posxy home(3:4)];
+                
+                pose = [posxy(k,:) home(3:4)];
                 v.move(pose, 50);
                 pause(dt - toc)
-                tic
             end
-            
+%             figure; plot(vlog(:,1:2)); hold on; set(gca, 'ColorOrderIndex', 1); plot(vlog(:,3:4), '--'); hold off
+
+%%
+            subplot(211), plot(posxy)
+            subplot(212), plot(posij)
+%%
+            velxyc = v.convert(bsxfun(@ldivide, diff(posij), diff(tr)));
+%             posxyc = bsxfun(@plus, posxy(1,:), [0 0; posxyc]);
+            figure; plot(t(2:end), diff(posxy)/dt)
+            hold on, set(gca, 'ColorOrderIndex', 1)
+            plot(tr(2:end), velxyc, '--'); hold off
             
         end
     end
