@@ -3,21 +3,26 @@ classdef VisualRobot < handle
     %   Requires a connected Arduino with the code robot_motion
     %
     %   Hints:
-    %    - Close all opened serial ports and camera: fclose(instrfind), imaqreset
+    %    - Close all opened serial ports and camera: fclose(instrfind), imaqreset, stop(timerfind)
     %    - Discard frames to free memory: flushdata(obj.vid)
     
     properties
         vid
         s
         
-        res = [320 240];    % camera resolution
-        T0c = [Ry(pi) [20e-2; 0; 50e-2]; 0 0 0 1]; % pose from world to camera
+        motion_timer
+        
+        res = [160 120];    % camera resolution
+        T0c = [Ry(pi) [25e-2; 0; 50e-2]; 0 0 0 1]; % pose from world to camera
+        
+        goal_pose = [0.2 0 0.1 pi/2-0.05];
+        goal_grip = 0;
     end
     
     methods
         function obj = VisualRobot(varargin)
             
-            obj.vid = videoinput('winvideo', 1, 'MJPG_320x240', 'TriggerRepeat', Inf, 'FrameGrabInterval', 1);
+            obj.vid = videoinput('winvideo', 1, 'MJPG_160x120', 'TriggerRepeat', Inf, 'FrameGrabInterval', 1);
             obj.s = serial('COM4', 'Baudrate', 115200, 'Terminator', 'CR/LF', 'Timeout', 0.1);
 
             % assign custom options
@@ -35,8 +40,28 @@ classdef VisualRobot < handle
             obj.s.BytesAvailableFcnMode = 'terminator';
             obj.s.BytesAvailableFcn = {@obj.serial_data_available};
             
+%             % create motion timer
+%             obj.motion_timer = timer(...
+%                 'ExecutionMode', 'fixedRate', ...   % Run timer repeatedly
+%                 'Period', 1/20, ...                % Initial period is 1 sec.
+%                 'TimerFcn', {@obj.update_motion}); % Specify callback
+            
             start(obj.vid)
             fopen(obj.s);
+%             start(obj.motion_timer)
+        end
+        
+        function update_motion(obj, event, self)
+            
+            persistent statev b
+            if isempty(statev)
+                statev = repmat([obj.goal_pose obj.goal_grip], [5 1]);
+                b = fir1(5, 0.5*1/(1/obj.motion_timer.Period));
+            end
+            
+            next_state = b * [obj.goal_pose obj.goal_grip; statev];
+            statev = [obj.goal_pose obj.goal_grip; statev(1:end-1,:)];
+            obj.command_motion(next_state(1:end-1), next_state(end));
         end
         
         function manual(obj)
@@ -94,6 +119,14 @@ classdef VisualRobot < handle
         end
         
         function move(obj, pose, grip)
+            obj.command_motion(pose, grip);
+
+%             obj.goal_pose = pose;
+%             obj.goal_grip = grip;
+
+        end
+        
+        function command_motion(obj, pose, grip)
             
             persistent q
             if isempty(q)
@@ -101,7 +134,7 @@ classdef VisualRobot < handle
             end
             tol = 1e-1;
             
-            [qp, dev] = ik(pose(:), q(:) * 0.8);
+            [qp, dev] = ik(pose(:), q(:) * 0.9);
             if norm(dev, 2) < tol && all(~isnan(dev))
                 str = sprintf('%f %f %f %f %f', qp, grip);
                 q = qp;
@@ -137,21 +170,9 @@ classdef VisualRobot < handle
 %             subplot(224), imshow(BWclose)
             set(gcf, 'position', [38    74   801   592])
             %}
-        end
+        end          
 
-        function v0 = convert(obj, vim)
-            % convert velocity in image to world
-            % change direction and scale
-            
-            % vim [pixels/sec]
-            % v0 [m/sec]
-            
-            v0 = [-vim(:,1) vim(:,2)] * (25e-2/200);
-        end
-            
-
-            
-            
+      
         function Tcb = find_board(obj, RGB)
             % find a large square on center of image
 
@@ -212,9 +233,81 @@ classdef VisualRobot < handle
             end
         end
         
+        function xyz = aproj(obj, ji, d)
+            % inverse camera projection function, given a guess d
+            
+            f = 97 * 53e-2 / 25e-2;
+            ji(:,1) = ji(:,1) - obj.res(1)/2;
+            ji(:,2) = ji(:,2) - obj.res(2)/2;
+            xyz = [ji*d/f ones(size(ji, 1), 1)*d];            
+        end
+        
+        function click_motion(obj)
+
+            figure, h = imshow(obj.getsnapshot);
+            set(gcf, 'position', [175   104   854   556])
+            
+            timerplot = timer(...
+                'ExecutionMode', 'fixedRate', ...   % Run timer repeatedly
+                'Period', 0.52, ...                % Initial period is 1 sec.
+                'TimerFcn', {@(self, event, obj) set(h, 'CData', obj.getsnapshot), obj}); % Specify callback
+            
+            timerctl = timer(...
+                'ExecutionMode', 'fixedRate', ...   % Run timer repeatedly
+                'Period', 0.05, ...                % Initial period is 1 sec.
+                'TimerFcn', {@update_control, obj}); % Specify callback
+
+            purpleprops = struct('hsvmin', [0.759 0.153  0.478], 'hsvmax', [0.867 0.668 1], 'marea', 380);
+            
+            home = [0.2 0 0.05 pi/2-0.05];
+            
+            % image error to world error
+            %{
+            home = [0.2 0 0.05 pi/2-0.05];
+            dcam = obj.T0c(3,4)-home(3)-5e-2;
+            syms xvar yvar
+            J = jacobian([obj.aproj([xvar yvar], dcam) 1] * obj.T0c', [xvar yvar]);
+            J = double(J(1:2,1:2));
+            %}
+            J = [-1.7020e-03 0; 0 1.7020e-03];
+            
+            obj.move(home, 0)
+            pause(2)
+            [target, success] = obj.search_by_color(rgb2hsv(obj.getsnapshot), purpleprops);
+            x = target.Centroid(1);
+            y = target.Centroid(1);
+            posxy = home(1:2);
+            start(timerplot), start(timerctl)
+            while isvalid(h)
+                
+                try
+                    [x, y] = ginput(1);
+                catch ME
+                    break
+                end               
+            end
+            
+            stop(timerplot), stop(timerctl)
+            
+            function update_control(self, event, obj)
+                
+                [target, success] = obj.search_by_color(rgb2hsv(obj.getsnapshot), purpleprops);
+                if success
+                    error = [x y] - target.Centroid;
+                    dxy = 0.1 * error * J';
+                    posxy = posxy + dxy;
+                    if norm(posxy - home(1:2), 2) < 0.12
+                        obj.move([posxy home(3:4)], 0)
+                    end
+                end 
+            end
+        end
+        
         function delete(obj)
+%             stop(obj.motion_timer)
             stop(obj.vid)
             fclose(obj.s);
+            disp('Stoping timers, camera and serial accesses')
         end
     end
     
@@ -261,19 +354,22 @@ classdef VisualRobot < handle
                   xy_long = xy;
                end
             end
+            
+
         end
         
         function test
             %%
-            dt = 0.2;
-            home = [0.2 0 0.1 pi/2-0.05];
-            purpleprops = struct('hsvmin', [0.759 0.153  0.478], 'hsvmax', [0.867 0.668 1], 'marea', 1000);
+            dt = 0.1;
+            home = [0.2 0 0.05 pi/2-0.05];
+            purpleprops = struct('hsvmin', [0.759 0.153  0.478], 'hsvmax', [0.867 0.668 1], 'marea', 380);
             
             v.move(home, 50);
             pause(1)
             
-            t = (0 : dt : 10)';
+            t = (0 : dt : 20)';
             posxy = bsxfun(@plus, bsxfun(@times, sin(2*pi*0.2*t), 7e-2*[1 -1]), home(1:2));
+            posxy(51:70,:) = repmat(home(1:2), [20 1]);
             posij = zeros(size(posxy));
             tr = zeros(size(t));
             
@@ -291,17 +387,17 @@ classdef VisualRobot < handle
                 v.move(pose, 50);
                 pause(dt - toc)
             end
-%             figure; plot(vlog(:,1:2)); hold on; set(gca, 'ColorOrderIndex', 1); plot(vlog(:,3:4), '--'); hold off
-
-%%
-            subplot(211), plot(posxy)
-            subplot(212), plot(posij)
-%%
-            velxyc = v.convert(bsxfun(@ldivide, diff(posij), diff(tr)));
-%             posxyc = bsxfun(@plus, posxy(1,:), [0 0; posxyc]);
-            figure; plot(t(2:end), diff(posxy)/dt)
+         
+            %%
+            disp('Real and expected fps: ')
+            [1/mean(diff(tr)) 1/dt]
+            
+            tposc = v.aproj(posij, 30e-2);    % target position in camera frame
+            tpos0 = [tposc ones(size(tposc,1), 1)] * v.T0c'; % in world frame
+                    
+            figure, plot(t, tpos0(:,1:2), '--')
             hold on, set(gca, 'ColorOrderIndex', 1)
-            plot(tr(2:end), velxyc, '--'); hold off
+            plot(t, posxy)
             
         end
     end
