@@ -63,7 +63,7 @@ void p(const char *str, float *_mat, size_t m, size_t n) {
 void setup() {
 
   Serial.begin(115200);
-  Serial.setTimeout(100);
+  Serial.setTimeout(1000);
   robot_setup();
 }
 
@@ -80,15 +80,18 @@ void loop() {
                   Serial.parseFloat() };  // in radians and meters [x, y, z, pitch]
     float gact = Serial.parseFloat();     // gripper act [0:open - 100:close]
 
+    // actuate as soon as possible
+    robot_move(q);
+    gripper_act(gact);
+
     delay(10);
     if (Serial.read() != '\r' || Serial.read() != '\n') {
       Serial.println("Not following communication protocol");
       while(Serial.available()) Serial.read();    // clear buffer
-      
-    } else {
-      robot_move(q);
-      gripper_act(gact);
-      Serial.println("ACK");
+
+      float home[] = {PI/2, PI/2, PI/2, PI/2};
+      robot_move(home);
+      gripper_act(0);
     }
   }
 }

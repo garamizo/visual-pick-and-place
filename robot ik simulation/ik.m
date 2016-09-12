@@ -6,7 +6,7 @@ function [qp, dev] = ik(t, q)
 %   dev: pose deviation, coordinate space
 
     ITER = 100;      % maximum number of iterations
-    TOL = 1e-5;     % maximum error tolerance
+    TOL = 1e-2;     % maximum error tolerance
     
     for k = 1 : ITER
         
