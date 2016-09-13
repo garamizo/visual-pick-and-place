@@ -5,25 +5,45 @@ classdef VisualRobot < handle
     %   Hints:
     %    - Close all opened serial ports and camera: fclose(instrfind), imaqreset, stop(timerfind)
     %    - Discard frames to free memory: flushdata(obj.vid)
+    %
+    %   How to check and set camera's available frame rates:
+    %     src = getselectedsource(v)
+    %     frameRates = set(src, 'FrameRate')
+    %     src.FrameRate = frameRates{1};
+    
+    properties (Constant)
+        home = [0.22 0 0.05 pi/2-0.01];
+    end
     
     properties
         vid
         s
         
-        motion_timer
-        
         res = [160 120];    % camera resolution
         T0c = [Ry(pi) [25e-2; 0; 50e-2]; 0 0 0 1]; % pose from world to camera
         
-        goal_pose = [0.2 0 0.1 pi/2-0.05];
-        goal_grip = 0;
+        pose_state = VisualRobot.home;
+        pose_goal = VisualRobot.home;
+        grip_state = 0;
+        ji_goal
+        ji_state
     end
     
     methods
         function obj = VisualRobot(varargin)
             
-            obj.vid = videoinput('winvideo', 1, 'MJPG_160x120', 'TriggerRepeat', Inf, 'FrameGrabInterval', 1);
-            obj.s = serial('COM4', 'Baudrate', 115200, 'Terminator', 'CR/LF', 'Timeout', 0.1);
+            obj.vid = videoinput('winvideo', 1, 'MJPG_160x120', ...
+                'TriggerRepeat', Inf, ...
+                'FrameGrabInterval', 1, ...
+                'FramesPerTrigger', 1, ...
+                'FramesAcquiredFcn', {@obj.frame_acquired_fcn}, ...
+                'FramesAcquiredFcnCount', 1);
+            
+            obj.s = serial('COM4', 'Baudrate', 115200, ...
+                'Terminator', 'CR/LF', ...
+                'Timeout', 0.1, ...
+                'BytesAvailableFcnMode', 'terminator', ...
+                'BytesAvailableFcn', {@obj.serial_data_available});
 
             % assign custom options
             for k = 1 : 2 : (nargin-3)
@@ -36,32 +56,18 @@ classdef VisualRobot < handle
                 end
             end
             
-            % enable serial data available callback
-            obj.s.BytesAvailableFcnMode = 'terminator';
-            obj.s.BytesAvailableFcn = {@obj.serial_data_available};
-            
-%             % create motion timer
-%             obj.motion_timer = timer(...
-%                 'ExecutionMode', 'fixedRate', ...   % Run timer repeatedly
-%                 'Period', 1/20, ...                % Initial period is 1 sec.
-%                 'TimerFcn', {@obj.update_motion}); % Specify callback
-            
-            start(obj.vid)
+            obj.ji_state = obj.res / 2;
+            obj.ji_goal = obj.res / 2;
+       
+%             start(obj.vid)
             fopen(obj.s);
-%             start(obj.motion_timer)
-        end
-        
-        function update_motion(obj, event, self)
-            
-            persistent statev b
-            if isempty(statev)
-                statev = repmat([obj.goal_pose obj.goal_grip], [5 1]);
-                b = fir1(5, 0.5*1/(1/obj.motion_timer.Period));
+            while ~strcmp(obj.s.Status, 'open')
+                % wait
             end
-            
-            next_state = b * [obj.goal_pose obj.goal_grip; statev];
-            statev = [obj.goal_pose obj.goal_grip; statev(1:end-1,:)];
-            obj.command_motion(next_state(1:end-1), next_state(end));
+%             start(obj.motion_timer)
+
+            pause(3) % wait for Arduino to setup
+            obj.move(obj.pose_state, obj.grip_state);
         end
         
         function manual(obj)
@@ -118,22 +124,25 @@ classdef VisualRobot < handle
             preview(obj.vid)
         end
         
-        function move(obj, pose, grip)
-            obj.command_motion(pose, grip);
-
-%             obj.goal_pose = pose;
-%             obj.goal_grip = grip;
-
-        end
         
-        function command_motion(obj, pose, grip)
+        function move(obj, pose, grip)
             
             persistent q
             if isempty(q)
-                q = zeros(4, 1);
+                q = zeros(4, 1);    % save previous joint values for fast ik
             end
             tol = 1e-1;
             
+            % constrain to bounds
+            bounds = [  0.1     -0.15   0       -pi/2+0.005
+                        0.35    0.15    0.1    pi/2-0.005];
+            if any(pose < bounds(1,:)) || any(pose > bounds(2,:))
+                pose(pose < bounds(1,:)) = bounds(1,pose < bounds(1,:));
+                pose(pose > bounds(2,:)) = bounds(2,pose > bounds(2,:));
+                warning(['Pose out of bounds. Constraining to ' num2str(pose)])
+            end
+            
+            % solve ik and actuate if solution exists
             [qp, dev] = ik(pose(:), q(:) * 0.9);
             if norm(dev, 2) < tol && all(~isnan(dev))
                 str = sprintf('%f %f %f %f %f', qp, grip);
@@ -242,69 +251,118 @@ classdef VisualRobot < handle
             xyz = [ji*d/f ones(size(ji, 1), 1)*d];            
         end
         
-        function click_motion(obj)
-
-            figure, h = imshow(obj.getsnapshot);
-            set(gcf, 'position', [175   104   854   556])
+        function [target, success] = find_self(obj, HSV)
+            % find itself in the image frame
             
-            timerplot = timer(...
-                'ExecutionMode', 'fixedRate', ...   % Run timer repeatedly
-                'Period', 0.52, ...                % Initial period is 1 sec.
-                'TimerFcn', {@(self, event, obj) set(h, 'CData', obj.getsnapshot), obj}); % Specify callback
-            
-            timerctl = timer(...
-                'ExecutionMode', 'fixedRate', ...   % Run timer repeatedly
-                'Period', 0.05, ...                % Initial period is 1 sec.
-                'TimerFcn', {@update_control, obj}); % Specify callback
-
             purpleprops = struct('hsvmin', [0.759 0.153  0.478], 'hsvmax', [0.867 0.668 1], 'marea', 380);
+            [target, success] = obj.search_by_color(HSV, purpleprops);
+        end
+        
+        function [target, success] = find_target(obj, HSV)
+            % find itself in the image frame
             
-            home = [0.2 0 0.05 pi/2-0.05];
+            blueprops = struct('hsvmin', [0.351 0 0], 'hsvmax', [0.739 1 1], 'marea', 180);
+            [target, success] = obj.search_by_color(HSV, blueprops);
+            if success
+                success = abs(target.Area - 180) < 180/5;
+            end
+        end
+        
+        function frame_acquired_fcn(obj, hvid, event, varargin)
             
-            % image error to world error
-            %{
-            home = [0.2 0 0.05 pi/2-0.05];
-            dcam = obj.T0c(3,4)-home(3)-5e-2;
-            syms xvar yvar
-            J = jacobian([obj.aproj([xvar yvar], dcam) 1] * obj.T0c', [xvar yvar]);
-            J = double(J(1:2,1:2));
-            %}
-            J = [-1.7020e-03 0; 0 1.7020e-03];
+            % acquire image
+            RGB = getdata(hvid);
             
-            obj.move(home, 0)
-            pause(2)
-            [target, success] = obj.search_by_color(rgb2hsv(obj.getsnapshot), purpleprops);
-            x = target.Centroid(1);
-            y = target.Centroid(1);
-            posxy = home(1:2);
-            start(timerplot), start(timerctl)
-            while isvalid(h)
+            % find self and update position state
+            HSV = rgb2hsv(RGB);
+            [self, success] = obj.find_self(HSV);
+            pose_state = obj.pose_state;
+            if success
+                obj.ji_state = self.Centroid;
+                
+                dself = 35e-2;
+                xyzself = [obj.aproj(self.Centroid, dself) 1] * obj.T0c';
+                pose_state(1:2) = 0.0 * xyzself(1:2) + 1 * obj.pose_state(1:2);
+            end
+            
+            % find target and update goal state
+            [target, success] = obj.find_target(HSV);
+            if success
+                dtarget = 50e-2;
+                xyztarget = [obj.aproj(target.Centroid, dtarget) 1] * obj.T0c';
+                obj.pose_goal = [xyztarget(1:2) obj.pose_goal(3:4)]; % kf here
+            end
+            
+            % move to target ji
+%             J = [-1.7020e-03 0; 0 1.7020e-03];
+            error = obj.pose_goal - pose_state;
+            dpose = 0.1 * error;
+            obj.pose_state = pose_state + dpose;
+            obj.move(obj.pose_state, obj.grip_state)
+            
+            % update image
+            h = get(gca, 'Children');
+            set(h, 'CData', RGB)
+        end
+        
+        function click_motion(obj)
+            
+            obj.start
+            while true
                 
                 try
-                    [x, y] = ginput(1);
+                    [x, y, b] = ginput(1);
+                    
+                    if b == 1
+                        obj.ji_goal = [x y];
+                    else
+                        break
+                    end
                 catch ME
                     break
                 end               
             end
-            
-            stop(timerplot), stop(timerctl)
-            
-            function update_control(self, event, obj)
-                
-                [target, success] = obj.search_by_color(rgb2hsv(obj.getsnapshot), purpleprops);
-                if success
-                    error = [x y] - target.Centroid;
-                    dxy = 0.1 * error * J';
-                    posxy = posxy + dxy;
-                    if norm(posxy - home(1:2), 2) < 0.12
-                        obj.move([posxy home(3:4)], 0)
-                    end
-                end 
-            end
+            obj.stop
         end
         
+        function [t, traj_ji, meas_ji] = auto_motion(obj)
+            
+            dt = 1/30;
+            t = (0 : dt : 20)';
+            traj_ji = bsxfun(@plus, bsxfun(@times, sin(2*pi*0.3*t), 40*[1 -1]), obj.res/2);
+            traj_ji(301:400,:) = repmat(obj.res/2, [100 1]);
+            meas_ji = zeros(size(traj_ji));
+            
+            obj.ji_goal = traj_ji(1,:);
+            obj.start
+            for k = 1 : length(t)
+                tic
+                obj.ji_goal = traj_ji(k,:);
+                meas_ji(k,:) = obj.ji_state;
+                pause(dt - toc)
+            end
+            obj.stop
+            
+            figure(2)
+            plot(t, traj_ji, '--')
+            hold on, set(gca, 'ColorOrderIndex', 1)
+            plot(t, meas_ji)
+        end
+        
+        function start(obj)
+            obj.pose_goal = VisualRobot.home;
+            figure
+            imshow(obj.getsnapshot)
+            start(obj.vid)
+            pause(2)
+        end
+        
+        function stop(obj)
+            stop(obj.vid)
+        end
+            
+        
         function delete(obj)
-%             stop(obj.motion_timer)
             stop(obj.vid)
             fclose(obj.s);
             disp('Stoping timers, camera and serial accesses')
@@ -358,6 +416,7 @@ classdef VisualRobot < handle
 
         end
         
+
         function test
             %%
             dt = 0.1;
